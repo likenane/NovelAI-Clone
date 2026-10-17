@@ -1,0 +1,43 @@
+# Custom Hooks & Business Logic - Development Guidelines
+
+This document defines the standards for custom React hooks.
+
+## 1. Hook Design
+- **Single Responsibility**: Each hook should handle one specific piece of logic (e.g., `useFirestoreNovel`, `useAIStream`).
+- **Memoization**: Use `useCallback` and `useMemo` to prevent unnecessary re-renders of consuming components.
+- **Cleanup**: Always implement cleanup logic in `useEffect` (e.g., unsubscribing from Firestore listeners).
+
+## 2. Firestore Hooks
+- **Real-time Sync**: Hooks interacting with Firestore should use `onSnapshot` for real-time updates.
+
+## 3. Core Hooks Inventory
+- **useAuth**: Manages Firebase Auth state, user settings, and API keys.
+- **useNovels**: Manages the novel list, folder hierarchy, and basic CRUD (add, delete, duplicate).
+  - **Unified I/O Pipeline**: Exposes `createNovelWithSubcollections` and `exportCompleteNovelData` for perfectly atomic, fallback-safe read/writes to subcollections. Integrates `deepMergeNovelSettings` and `sanitizeAndRemapLoreEntries` for zero data loss on settings, plot blueprints, story memory, and codex hierarchy.
+  - **Deep Concurrency Management**: Implements a `Sync Pauser` using `isDraggingGlobal`. When a drag is active, incoming Firestore snapshots are buffered locally to prevent the UI from snapping back mid-drag.
+  - **Latest-Wins POST-Write Flush**: The buffer only flushes AFTER the Drag & Drop Firestore writes complete (or fail).
+  - **Eventual Consistency & Orphan Bypass**: If a network write times out (>10s), the UI retains the optimistic state instead of rolling back, and logs the ID in `orphanedWriteIdsRef`. Subsequent drags selectively bypass the lock to seamlessly patch these delayed updates.
+- **useNovelContent**: Manages the active novel's content, lore entries, plot blueprint, and auto-save logic. 
+  - Uses functional state updaters (`setCurrentNovel(prev => ...)`) and `useRef` for callbacks (e.g., `saveNovelRef`) to avoid stale closures in `setTimeout`.
+  - **Lore Subcollection Lifecycle & Decoupled Migration**: Lore entries synchronize in real-time via `onSnapshot` on `/novels/{id}/loreEntries`. Legacy root-document migration (`checkAndMigrateLegacyLore`) is strictly isolated to a one-time check during novel load, preventing the listener from mistaking an empty collection for a legacy unmigrated state and resurrecting the final remaining deleted entry. `deleteLoreEntry` incorporates an optimistic UI update for instant feedback.
+  - **Self-Healing & Dedicated Hierarchy Recovery (`healLoreHierarchy`)**: Real-time snapshot listener automatically repairs circular or broken parent references, resets them to `parentId: null`, and persists healed records to Firestore. Exposes `healLoreHierarchy` to untangle cycles, clear orphaned references, and cleanly re-index sibling orders (`0, 10, 20...`) across all parent levels.
+  - **Pre-Save Guarantee & Promise Return**: `saveNovel` returns `Promise<boolean>`. In the novel download routine, it attempts to synchronize to Firestore, but if the database returns an error or quota exhaustion, the export pipeline safely proceeds via in-memory hot snapshot without aborting.
+  - **Plot Field Synchronization**: Includes `plot` in metadata updates, dirty checking (`lastSavedNovelRef`), and novel list sync to prevent data loss.
+  - **Immediate Persistence**: `updateNovelContent` supports an `immediate: boolean` parameter to bypass debouncing when applying proposals or updating critical structural metadata.
+- **useAIEngine**: Encapsulates all AI generation logic and related UI states (isGenerating, suggestions).
+  - **Consistency Refiner**: Connects to the 2-Stage `runConsistencyPipeline`. Supplies `preGenerationContent` to the refiner to extract precise physical anchors (`anchorText`). Handles `setEditable(false)` and `setEditable(true)` locking, sets dynamic "Generating..." messages, and processes Safe Fallback notifications if validation fails. Uses functional state updaters and `tr.addMark` for reliable editor transactions.
+  - **Anchor Stitching & Physical Newline Insertion**: Uses `stitchAndTrimAnchor` to cleanly strip echoed anchor text via sliding prefix matching, and directly maps remaining physical newlines into Tiptap (`\n\n` -> `<p></p>` blank line + new paragraph at `docSize`, `\n` -> new paragraph at `docSize`, and inline -> inside current paragraph at `docSize - 1`). For inline continuations (`newlineCount === 0`), leading whitespace is strictly preserved (with duplicate space guards) so word boundaries remain intact. All artificial tag parsing and fragile DOM heuristics are eliminated.
+  - **Precision Prose Token Slicing (`sliceProseByTokens`)**: Immediately following anchor trimming and newline detection, the engine slices newly generated prose strictly at `currentNovel.settings.maxTokens`. This provides predictable, consistent output lengths even when thinking models (`thinkingLevel: HIGH/LOW`) are active, while preserving the natural, abrupt mid-sentence cutoff characteristic of the Novelist Continuity Principle.
+  - **Manual Codex Adaptive CoT**: In `handleGenerateCodex`, uses `parseCodexAssistantResponse` to parse structured JSON responses, storing `thoughtProcess` in `lastCodexPromptInfo` (enabling visual inspection of Directive Intent, Dechronologization, Header Teleology, and Lossless Preservation) and routing sanitized `finalContent` into `codexAISuggestion`.
+  - **Task-Aware Isolation**: Precision token slicing and anchor trimming are applied exclusively to novel prose continuations (`handleContinue`). Non-continuation tasks (`handleGenerateCodexContent`, `handleGenerateMemoryWorkbench`) bypass slicing and trimming to preserve complete sentences, summaries, and uncorrupted data.
+- **useAutoCodex**: Manages the background scan timer and the business logic for AI-proposed Codex entries.
+  - **Zero-I/O Persistent Counter & Delta Accumulation**: Accumulates character delta (`incrementChars`) against `triggerChars` (default: `7,500` chars via `GLOBAL_DEFAULTS.autoCodex.triggerChars`). Persisted across sessions, refreshes, novel switches, and settings toggles via `counterStorage.ts` (`localStorage`). Supports Delta Subtraction with Floor (`Math.max(0, current + count)`). Resets to 0 exclusively upon successful scan (auto or manual directive scan), preserving accumulated counts on errors to protect user progress.
+  - **Structured CoT Integration & Defensive Filtering**: Parses responses into typed `AutoCodexResponse` with multi-key fallbacks (`updates/modifiedEntries/updatedEntries`, `newEntries/createdEntries`, `candidateTitle/name`, `tags/keywords`), safely extracting `thoughtProcess.step5_globalSynthesis` with fallback to `globalAnalysis`. Cross-validates proposed updates and new entries against CoT verdicts: automatically drops any update target evaluated as `verdict: "DROP"` or `isLocked: true`, and filters out any new entry candidate marked `verdict: "REJECT"` during `step3_newEntryScreening`.
+  - **Lineage Tracking & Scrubbing**: Utilizes `originalEntryId` for deduplication and matching to prevent lost updates when titles change. Employs `normalizeText` for deep meaningful-change detection. Clears (`nullifies`) temporary AI fields like `updateReason` seamlessly on acceptance to prevent DB bleed.
+- **useAutoPlot**: Manages automated plot generation and proposal staging.
+  - **Zero-I/O Persistent Counter & Delta Accumulation**: Listens to editor character deltas (`incrementPlotChars`). Persisted across browser sessions, refreshes, novel switches, and settings toggles via `counterStorage.ts` (`localStorage`). Supports Delta Subtraction with Floor (`Math.max(0, current + count)`). Resets to 0 exclusively upon successful generation (auto or manual workbench run), retaining counts upon errors. When reaching the configured threshold (default: `7,500` chars via `GLOBAL_DEFAULTS.plot.triggerChars`), fires a background generation run if not already generating. Passes `lastContentRef.current` directly into `generateTaskContext` via `overrideContent` to guarantee that the AI generates plots using up-to-the-millisecond written story prose without React render delays.
+  - **Proposal Staging**: Stores generated plots in `pendingPlotProposal` for user audit in `PlotWorkbench` before mutating novel state, preventing automatic, silent overwriting of authorial intent.
+  - **Strict Fail-Fast Integration**: Uses `plotService.ts` to guarantee only complete, valid 3-part plot blueprints are accepted.
+
+## 4. Maintenance
+- **AI Agent Protocol**: Follow the "Mandatory AI Agent Protocol" in `/AGENTS.md`. Update this file whenever custom hooks or business logic change.

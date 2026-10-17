@@ -1,0 +1,133 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: novels
+    // Fields:
+    //   - title: string (1-200)
+    //   - authorUid: string (UID)
+    //   - type: string ('item' | 'folder')
+    //   - parentId: string | null
+    //   - order: number
+    //   - settings: map
+    //   - createdAt: timestamp
+    //   - updatedAt: timestamp
+    //
+    // Collection: novels/{novelId}/contents
+    // Document ID: main
+    // Fields:
+    //   - content: string (max 1MB)
+    //   - updatedAt: timestamp
+    //
+    // Collection: novels/{novelId}/loreEntries
+    // Fields:
+    //   - title: string (max 200)
+    //   - content: string (max 50KB)
+    //   - keywords: string (max 500)
+    //   - isAlwaysActive: bool
+    //   - enabled: bool
+    //   - type: string ('item' | 'folder')
+    //   - parentId: string | null
+    //   - order: number
+    //   - updatedAt: timestamp
+    //
+    // Collection: users
+    // Fields:
+    //   - email: string
+    //   - displayName: string
+    //   - photoURL: string
+    //   - role: string ('admin' | 'user')
+    //   - createdAt: timestamp
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        (('email' in request.auth.token) && request.auth.token.email == "likenane01@gmail.com" && ('email_verified' in request.auth.token) && request.auth.token.email_verified == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    function isDocOwner(novelId) {
+      return isAuthenticated() && (
+        isAdmin() || 
+        (exists(/databases/$(database)/documents/novels/$(novelId)) && 
+         get(/databases/$(database)/documents/novels/$(novelId)).data.authorUid == request.auth.uid) ||
+        (existsAfter(/databases/$(database)/documents/novels/$(novelId)) && 
+         getAfter(/databases/$(database)/documents/novels/$(novelId)).data.authorUid == request.auth.uid)
+      );
+    }
+
+    // Domain Validators
+    function isValidNovel(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             (!('authorUid' in data) || (data.authorUid is string && data.authorUid.size() <= 128)) &&
+             (!('type' in data) || data.type in ['item', 'folder']);
+    }
+
+    function isValidContent(data) {
+      return data.content is string && data.content.size() <= 1048576; // 1MB
+    }
+
+    function isValidLore(data) {
+      return data.title is string && data.title.size() <= 200 &&
+             data.content is string && data.content.size() <= 51200 && // 50KB
+             (!('type' in data) || data.type in ['item', 'folder']);
+    }
+
+    function isValidMemoryCard(data) {
+      return data.type in ['사건', '막요약', '정정'] &&
+             data.content is string && data.content.size() <= 10240 && // 10KB
+             data.time is string && data.time.size() <= 200 &&
+             data.tags is list && data.tags.size() <= 20;
+    }
+
+    match /novels/{novelId} {
+      allow read, list: if isAuthenticated() && (resource.data.authorUid == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidNovel(request.resource.data) && request.resource.data.authorUid == request.auth.uid;
+      allow update: if isAuthenticated() && isValidNovel(request.resource.data) && (resource.data.authorUid == request.auth.uid || isAdmin()) && request.resource.data.authorUid == resource.data.authorUid;
+      allow delete: if isAuthenticated() && (resource.data.authorUid == request.auth.uid || isAdmin());
+
+      match /contents/{contentId} {
+        allow read, list: if isDocOwner(novelId);
+        allow create, update: if isDocOwner(novelId) && isValidContent(request.resource.data);
+        allow delete: if isDocOwner(novelId);
+      }
+
+      match /loreEntries/{entryId} {
+        allow read, list: if isDocOwner(novelId);
+        allow create, update: if isDocOwner(novelId) && isValidLore(request.resource.data);
+        allow delete: if isDocOwner(novelId);
+      }
+
+      match /memoryCards/{cardId} {
+        allow read, list: if isDocOwner(novelId);
+        allow create, update: if isDocOwner(novelId) && isValidMemoryCard(request.resource.data);
+        allow delete: if isDocOwner(novelId);
+      }
+    }
+    
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId);
+      allow update: if (isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin();
+      allow delete: if isAdmin();
+
+      match /promptPresets/{presetId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+    }
+  }
+}

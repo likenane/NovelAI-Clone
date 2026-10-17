@@ -1,0 +1,59 @@
+{
+  "entities": {
+    "Novel": {
+      "title": "Novel Metadata",
+      "description": "Metadata for a novel",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "The title of the novel" },
+        "authorUid": { "type": "string", "description": "The UID of the author" },
+        "type": { "type": "string", "enum": ["item", "folder"], "description": "Item type" },
+        "parentId": { "type": "string", "description": "Parent folder ID" },
+        "order": { "type": "number", "description": "Display order" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" },
+        "settings": { "type": "object", "description": "Novel settings" }
+      },
+      "required": ["title", "authorUid", "createdAt", "updatedAt"]
+    },
+    "NovelContent": {
+      "title": "Novel Content",
+      "description": "The actual text content of the novel",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string", "description": "The full text content" }
+      },
+      "required": ["content"]
+    },
+    "LoreEntry": {
+      "title": "Lore Entry",
+      "description": "An entry in the codex",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "keywords": { "type": "string" },
+        "isAlwaysActive": { "type": "boolean" },
+        "enabled": { "type": "boolean" },
+        "type": { "type": "string", "enum": ["item", "folder"] },
+        "parentId": { "type": "string" },
+        "order": { "type": "number" }
+      },
+      "required": ["title", "content", "enabled"]
+    }
+  },
+  "firestore": {
+    "/novels/{novelId}": {
+      "schema": "Novel",
+      "description": "Metadata for novels"
+    },
+    "/novels/{novelId}/contents/main": {
+      "schema": "NovelContent",
+      "description": "Main content of the novel"
+    },
+    "/novels/{novelId}/loreEntries/{entryId}": {
+      "schema": "LoreEntry",
+      "description": "Codex entries for the novel"
+    }
+  }
+}

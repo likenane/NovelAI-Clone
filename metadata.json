@@ -1,0 +1,6 @@
+{
+  "name": "(V4.2)NovelAI Clone - AI Writing Assistant",
+  "description": "A powerful AI-driven novel writing tool inspired by NovelAI, supporting Gemini and OpenRouter for seamless scene continuation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
